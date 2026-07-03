@@ -7,8 +7,10 @@ no always-on machine. Notifications are delivered via [ntfy.sh](https://ntfy.sh)
 
 ## How it works
 
-Every ~15 minutes a GitHub Actions job runs [`check_chapter.py`](check_chapter.py),
-which:
+A GitHub Actions job runs [`check_chapter.py`](check_chapter.py) on a schedule
+tuned to TCB's release pattern — **every 15 minutes on Wed/Thu/Fri** (when
+chapters normally drop, most often Thursday) and **every 3 hours** the rest of
+the week as a safety net for early/delayed releases. Each run:
 
 1. Fetches the TCB One Piece chapter list with a browser User-Agent.
 2. Parses every `/chapters/{id}/one-piece-chapter-{number}` link and picks the
@@ -65,7 +67,7 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
   (e.g. `1186`) and run the workflow again. Your phone should buzz with the latest
   chapter within seconds, and the workflow will auto-correct `last_chapter.txt`.
 
-That's it. From now on GitHub checks the site every ~15 minutes and pushes a
+That's it. From now on GitHub checks the site on the schedule above and pushes a
 notification (whose tap opens the chapter directly) the moment a new one drops.
 
 ## Notification format
@@ -98,5 +100,9 @@ NTFY_TOPIC=your-topic python check_chapter.py        # Linux/macOS
   it's a near drop-in replacement that solves Cloudflare's basic challenge. Add
   `cloudscraper` to `requirements.txt` and replace `requests.get(...)` in
   `fetch_chapters()` with a `cloudscraper.create_scraper()` session.
-- **Actions minutes**: private repos get 2,000 free minutes/month; this job uses
-  well under 100. Public repos are unlimited.
+- **Actions minutes / cost**: **public repos get unlimited free Actions** (this
+  repo is public — recommended). If you make it private instead, you get 2,000
+  free min/month; the tuned schedule above uses roughly ~1,400 min/month, which
+  still fits — but a 24/7 every-15-min schedule would *not* (~2,880 min/month).
+  Either way, set your Actions **spending limit to $0**
+  (github.com/settings/billing) to guarantee you're never charged.

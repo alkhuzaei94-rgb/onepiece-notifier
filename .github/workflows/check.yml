@@ -2,8 +2,14 @@ name: Check for new One Piece chapter
 
 on:
   schedule:
-    # Every 15 minutes. GitHub cron is best-effort and may be delayed 5-15 min.
-    - cron: "*/15 * * * *"
+    # NOTE: all cron times are UTC. TCB One Piece chapters normally drop
+    # Wed-Fri (most often Thursday), so check every 15 min during that window
+    # for a fast notification...  (day-of-week: Wed=3, Thu=4, Fri=5)
+    - cron: "*/15 * * * 3,4,5"
+    # ...and keep a lighter safety net every 3 hours the rest of the week
+    # (Sun/Mon/Tue/Sat) in case a release is early, delayed into the weekend,
+    # or shifted by a break. GitHub cron is best-effort and may lag 5-15 min.
+    - cron: "0 */3 * * 0,1,2,6"
   workflow_dispatch: {}
 
 # Allow the job to push the updated last_chapter.txt back to the repo.
