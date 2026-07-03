@@ -1,0 +1,46 @@
+name: Check for new One Piece chapter
+
+on:
+  schedule:
+    # Every 15 minutes. GitHub cron is best-effort and may be delayed 5-15 min.
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+# Allow the job to push the updated last_chapter.txt back to the repo.
+permissions:
+  contents: write
+
+# Never let two runs race on the commit/push of last_chapter.txt.
+concurrency:
+  group: chapter-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check for new chapter
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python check_chapter.py
+
+      - name: Commit updated last_chapter.txt
+        run: |
+          git config user.name "chapter-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add last_chapter.txt
+          git diff --cached --quiet || git commit -m "New chapter detected" && git push
