@@ -1,33 +1,48 @@
 name: Check for new One Piece chapter
 
 on:
+  # GitHub's scheduler is unreliable for this repo: since Sept it has fired the
+  # 15-min schedule only every ~3-5 hours, which is what made notifications
+  # late. For prompt notifications, trigger workflow_dispatch from an external
+  # cron service every few minutes (see README, "Getting notified on time");
+  # the schedules below are only a fallback.
   schedule:
     # NOTE: all cron times are UTC. TCB One Piece chapters normally drop
-    # Wed-Fri (most often Thursday), so check every 15 min during that window
-    # for a fast notification...  (day-of-week: Wed=3, Thu=4, Fri=5)
-    - cron: "*/15 * * * 3,4,5"
+    # Thu/Fri, so check every 15 min Wed-Fri...  (day-of-week: Wed=3, Thu=4,
+    # Fri=5). Minutes avoid :00/:15/:30/:45, which GitHub documents as its
+    # highest-load (most delayed / dropped) times.
+    - cron: "7,22,37,52 * * * 3,4,5"
     # ...and keep a lighter safety net every 3 hours the rest of the week
     # (Sun/Mon/Tue/Sat) in case a release is early, delayed into the weekend,
-    # or shifted by a break. GitHub cron is best-effort and may lag 5-15 min.
-    - cron: "0 */3 * * 0,1,2,6"
+    # or shifted by a break.
+    - cron: "41 */3 * * 0,1,2,6"
   workflow_dispatch: {}
 
 # Allow the job to push the updated last_chapter.txt back to the repo.
 permissions:
   contents: write
 
-# Never let two runs race on the commit/push of last_chapter.txt.
+# Never let two runs race on the commit/push of last_chapter.txt. Queue rather
+# than cancel: cancelling a run between sending the notification and pushing
+# last_chapter.txt would make the next run announce the same chapter again.
 concurrency:
   group: chapter-check
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    # A normal run takes ~15s (up to ~3 min with fetch retries). Don't let a
+    # hung run hold up the queue for the 6-hour default.
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          # Check out the branch tip, not the commit the run was triggered on,
+          # so a run that waited in the queue sees the last_chapter.txt pushed
+          # by the run ahead of it.
+          ref: ${{ github.ref_name }}
           persist-credentials: true
 
       - name: Set up Python

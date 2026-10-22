@@ -14,6 +14,7 @@ Exit codes:
 import os
 import re
 import sys
+import time
 
 import requests
 from bs4 import BeautifulSoup
@@ -22,6 +23,12 @@ CHAPTER_LIST_URL = "https://tcbonepiecechapters.com/mangas/5/one-piece"
 BASE_URL = "https://tcbonepiecechapters.com"
 LAST_CHAPTER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "last_chapter.txt")
 REQUEST_TIMEOUT = 30
+
+# TCB's origin regularly answers with Cloudflare 502/522s or read timeouts for a
+# few seconds at a time. A failed run otherwise waits for the next scheduled
+# run (which GitHub can delay by hours), so retry transient failures in-run.
+FETCH_ATTEMPTS = 3
+RETRY_DELAY = 15  # seconds before the 2nd attempt; doubles each retry
 
 # A real browser User-Agent so we are not trivially blocked by Cloudflare.
 USER_AGENT = (
@@ -60,19 +67,44 @@ def split_title(full_title, number):
     return chapter_label, subtitle
 
 
+def get_with_retry(url, **kwargs):
+    """GET url, retrying timeouts, connection errors, 5xx and 429 responses.
+
+    Other errors (e.g. a 403 from Cloudflare) are raised immediately, as is the
+    last error once FETCH_ATTEMPTS is exhausted.
+    """
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            resp = requests.get(url, **kwargs)
+            resp.raise_for_status()
+            return resp
+        except requests.RequestException as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            transient = status is None or status == 429 or status >= 500
+            if not transient or attempt == FETCH_ATTEMPTS:
+                raise
+            delay = RETRY_DELAY * 2 ** (attempt - 1)
+            print(
+                f"WARNING: fetch attempt {attempt}/{FETCH_ATTEMPTS} failed ({exc}); "
+                f"retrying in {delay}s",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+
+
 def fetch_chapters():
     """Fetch and parse the chapter list.
 
     Returns a list of (number_float, full_title, absolute_url) tuples. Raises
-    requests.RequestException on network/HTTP errors. Returns [] if the page
-    loaded but contained no recognizable chapter links.
+    requests.RequestException on network/HTTP errors (after retrying transient
+    ones). Returns [] if the page loaded but contained no recognizable chapter
+    links.
     """
-    resp = requests.get(
+    resp = get_with_retry(
         CHAPTER_LIST_URL,
         headers={"User-Agent": USER_AGENT},
         timeout=REQUEST_TIMEOUT,
     )
-    resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
 
     chapters = []
