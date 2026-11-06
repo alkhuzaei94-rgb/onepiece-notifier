@@ -7,12 +7,14 @@ no always-on machine. Notifications are delivered via [ntfy.sh](https://ntfy.sh)
 
 ## How it works
 
-A GitHub Actions job runs [`check_chapter.py`](check_chapter.py) on a schedule
-tuned to TCB's release pattern — **every 15 minutes on Wed/Thu/Fri** (when
-chapters normally drop, most often Thursday) and **every 3 hours** the rest of
-the week as a safety net for early/delayed releases. Each run:
+A GitHub Actions job runs [`check_chapter.py`](check_chapter.py) every few
+minutes, triggered by a free external cron service (see
+[Getting notified on time](#5-getting-notified-on-time-external-trigger)), with
+GitHub's own schedule — every 15 minutes on Wed/Thu/Fri and every 3 hours the
+rest of the week — as a fallback. Each run:
 
-1. Fetches the TCB One Piece chapter list with a browser User-Agent.
+1. Fetches the TCB One Piece chapter list with a browser User-Agent, retrying
+   briefly if TCB answers with a 5xx/timeout (it often does for a few seconds).
 2. Parses every `/chapters/{id}/one-piece-chapter-{number}` link and picks the
    highest chapter number (e.g. `1053-4` is compared as `1053.4`).
 3. Compares it against the number stored in [`last_chapter.txt`](last_chapter.txt).
@@ -67,8 +69,49 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
   (e.g. `1186`) and run the workflow again. Your phone should buzz with the latest
   chapter within seconds, and the workflow will auto-correct `last_chapter.txt`.
 
-That's it. From now on GitHub checks the site on the schedule above and pushes a
-notification (whose tap opens the chapter directly) the moment a new one drops.
+### 5. Getting notified on time (external trigger)
+
+**Don't skip this step.** GitHub's built-in schedule is unreliable: although the
+workflow asks for a check every 15 minutes on Wed–Fri, GitHub has actually been
+running it only every **3–5 hours** (see [Caveats](#caveats)), so a chapter could
+sit on TCB for hours before you heard about it. Manually triggered runs, by
+contrast, start within seconds, so let a free cron service trigger the workflow
+for you.
+
+1. **Create a token that can only start this workflow.** GitHub → Settings →
+   Developer settings → Personal access tokens → **Fine-grained tokens** →
+   *Generate new token*:
+   - Repository access: **Only select repositories** → `onepiece-notifier`
+   - Repository permissions: **Actions → Read and write** (nothing else)
+   - Pick an expiration and set yourself a reminder to renew it.
+2. **Create a cron job** at [cron-job.org](https://cron-job.org) (free) →
+   *Create cronjob*:
+   - URL: `https://api.github.com/repos/<you>/onepiece-notifier/actions/workflows/check.yml/dispatches`
+   - Schedule: **every 5 minutes** on **Wednesday, Thursday and Friday**
+     (timezone UTC). GitHub's 3-hourly fallback covers the other days.
+   - *Advanced* tab → Request method **POST**, request body `{"ref":"main"}`,
+     and these headers:
+
+     | Header                 | Value                         |
+     | ---------------------- | ----------------------------- |
+     | `Accept`               | `application/vnd.github+json` |
+     | `Authorization`        | `Bearer <your token>`         |
+     | `X-GitHub-Api-Version` | `2022-11-28`                  |
+3. Click **Test run**. It should return **HTTP 204**, and a new
+   `workflow_dispatch` run should appear in the Actions tab a few seconds later.
+
+You can test the token from a terminal too:
+
+```bash
+curl -X POST https://api.github.com/repos/<you>/onepiece-notifier/actions/workflows/check.yml/dispatches \
+  -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer <your token>" \
+  -d '{"ref":"main"}'
+```
+
+That's it. From now on the site is checked every few minutes during the release
+window, and you get a notification (whose tap opens the chapter directly) within
+minutes of a new one dropping.
 
 ## Notification format
 
@@ -93,8 +136,13 @@ NTFY_TOPIC=your-topic python check_chapter.py        # Linux/macOS
 
 ## Caveats
 
-- **GitHub cron is best-effort** — runs can be delayed 5–15 min during busy
-  periods. Still plenty fast for a weekly release.
+- **GitHub's schedule alone is too slow.** Scheduled runs are best-effort and
+  GitHub silently drops them under load. In this repo the every-15-min Wed–Fri
+  schedule actually fired every 45–90 min in July/August and every **3–5 h**
+  from September on (e.g. chapter 1196 was picked up at 07:05 UTC on a Friday;
+  the previous check had been at 02:04). That's why the external trigger in
+  step 5 is needed. The fallback schedule avoids the `:00`/`:15`/`:30`/`:45`
+  minute marks, which GitHub documents as its busiest times.
 - **Cloudflare**: if TCB ever starts returning `403` to GitHub's IP ranges,
   swap `requests` for [`cloudscraper`](https://pypi.org/project/cloudscraper/) —
   it's a near drop-in replacement that solves Cloudflare's basic challenge. Add
@@ -102,7 +150,8 @@ NTFY_TOPIC=your-topic python check_chapter.py        # Linux/macOS
   `fetch_chapters()` with a `cloudscraper.create_scraper()` session.
 - **Actions minutes / cost**: **public repos get unlimited free Actions** (this
   repo is public — recommended). If you make it private instead, you get 2,000
-  free min/month; the tuned schedule above uses roughly ~1,400 min/month, which
-  still fits — but a 24/7 every-15-min schedule would *not* (~2,880 min/month).
-  Either way, set your Actions **spending limit to $0**
-  (github.com/settings/billing) to guarantee you're never charged.
+  free min/month and every run is billed as at least 1 minute, so an
+  every-5-minute Wed–Fri trigger (~3,700 runs/month) would *not* fit — trigger
+  every 10 minutes on Thu/Fri only instead. Either way, set your Actions
+  **spending limit to $0** (github.com/settings/billing) to guarantee you're
+  never charged.
