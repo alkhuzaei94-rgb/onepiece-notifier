@@ -1,34 +1,41 @@
 name: Check for new One Piece chapter
 
+# Why it works this way: GitHub's cron scheduler is best-effort and, in
+# practice, a "*/15" schedule on this repo only fired every 4-8 hours, so
+# chapters were being announced hours late.
+#
+# Now, during the Wed-Fri (UTC) release window, a run stays alive and checks
+# the site every 60s for up to ~5.5h, then starts the next run itself
+# (workflow_dispatch) so coverage is continuous until a chapter is found or
+# the window closes. The cron entries below are only a kick-starter / safety
+# net to (re)start that chain; outside the window each run is a single check.
 on:
   schedule:
-    # NOTE: all cron times are UTC. TCB One Piece chapters normally drop
-    # Wed-Fri (most often Thursday), so check every 15 min during that window
-    # for a fast notification...  (day-of-week: Wed=3, Thu=4, Fri=5)
-    - cron: "*/15 * * * 3,4,5"
-    # ...and keep a lighter safety net every 3 hours the rest of the week
-    # (Sun/Mon/Tue/Sat) in case a release is early, delayed into the weekend,
-    # or shifted by a break. GitHub cron is best-effort and may lag 5-15 min.
-    - cron: "0 */3 * * 0,1,2,6"
+    - cron: "7,37 * * * 3,4,5"       # Wed-Fri: restart the watch chain if it broke
+    - cron: "17 */3 * * 0,1,2,6"     # rest of week: occasional single check
   workflow_dispatch: {}
 
-# Allow the job to push the updated last_chapter.txt back to the repo.
 permissions:
-  contents: write
+  contents: write   # push last_chapter.txt
+  actions: write    # start the next watch run
 
-# Never let two runs race on the commit/push of last_chapter.txt.
+# Only one run at a time. Don't cancel a running watcher: extra triggers just
+# wait in the queue (GitHub keeps only the newest pending one).
 concurrency:
   group: chapter-check
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          persist-credentials: true
+          # Use the branch tip, not the SHA from when this run was queued, so a
+          # run that waited behind a watcher sees its updated last_chapter.txt.
+          ref: ${{ github.ref_name }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -38,15 +45,29 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Check for new chapter
+      - name: Check / watch for new chapter
+        id: check
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python check_chapter.py
+          POLL_SECONDS: "60"
+        run: python -u check_chapter.py
 
       - name: Commit updated last_chapter.txt
+        if: steps.check.outputs.found == 'true'
         run: |
           git config user.name "chapter-bot"
           git config user.email "bot@users.noreply.github.com"
           git add last_chapter.txt
-          git diff --cached --quiet || git commit -m "New chapter detected" && git push
+          if ! git diff --cached --quiet; then
+            git commit -m "New chapter detected"
+            # The watcher may have been running for hours; pick up any newer commits.
+            git pull --rebase
+            git push
+          fi
+
+      - name: Start next watch run
+        if: steps.check.outputs.chain == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run check.yml --ref "${{ github.ref_name }}"
