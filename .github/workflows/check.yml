@@ -32,6 +32,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Use the branch tip, not the SHA from when this run was queued, so a
+          # run that waited behind a watcher sees its updated last_chapter.txt.
+          ref: ${{ github.ref_name }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
