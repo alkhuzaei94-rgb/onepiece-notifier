@@ -5,15 +5,29 @@ Fetches the TCB One Piece chapter list, finds the newest chapter, and if it is
 newer than the last one we recorded, fires an ntfy (and optionally Discord)
 notification, then records the new chapter number.
 
+Two modes:
+  * single check (default, used outside the release window)
+  * watch mode: during the Wed-Fri (UTC) release window the script stays
+    running and re-checks every POLL_SECONDS until a chapter is found, the
+    window closes, or MAX_RUN_MINUTES is reached. This exists because GitHub's
+    cron scheduler is unreliable (a "*/15" schedule in practice fires only
+    every 4-8 hours), so we can't depend on it for a fast notification.
+
+When running in GitHub Actions the script writes `found` and `chain` to
+$GITHUB_OUTPUT so the workflow knows whether to commit and whether to start
+the next watch run.
+
 Exit codes:
   0  success (whether or not a new chapter was found)
-  1  the page fetch failed, no chapter links were parsed, or a configured
-     ntfy notification could not be delivered. In these cases last_chapter.txt
-     is left untouched so the next run retries.
+  1  (single-check mode only) the page fetch failed, no chapter links were
+     parsed, or ntfy could not be delivered. last_chapter.txt is left
+     untouched so the next run retries.
 """
 import os
 import re
 import sys
+import time
+from datetime import datetime, timedelta, timezone
 
 import requests
 from bs4 import BeautifulSoup
@@ -22,6 +36,12 @@ CHAPTER_LIST_URL = "https://tcbonepiecechapters.com/mangas/5/one-piece"
 BASE_URL = "https://tcbonepiecechapters.com"
 LAST_CHAPTER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "last_chapter.txt")
 REQUEST_TIMEOUT = 30
+
+# Watch-mode settings.
+RELEASE_WEEKDAYS = {2, 3, 4}  # Python weekday(): Wed=2, Thu=3, Fri=4 (UTC)
+POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "60"))
+# GitHub kills jobs at 6h; stay well under so the follow-up run can start.
+MAX_RUN_MINUTES = int(os.environ.get("MAX_RUN_MINUTES", "330"))
 
 # A real browser User-Agent so we are not trivially blocked by Cloudflare.
 USER_AGENT = (
@@ -138,7 +158,8 @@ def send_discord(webhook_url, content):
     resp.raise_for_status()
 
 
-def main():
+def check_once():
+    """Run one check. Returns "new", "none" or "error"."""
     topic = os.environ.get("NTFY_TOPIC")
     discord_url = os.environ.get("DISCORD_WEBHOOK_URL")
 
@@ -147,14 +168,14 @@ def main():
         chapters = fetch_chapters()
     except requests.RequestException as exc:
         print(f"ERROR: failed to fetch chapter list: {exc}", file=sys.stderr)
-        return 1
+        return "error"
 
     if not chapters:
         print(
             "ERROR: no chapter links found (page layout changed or blocked?)",
             file=sys.stderr,
         )
-        return 1
+        return "error"
 
     # 2. Newest = highest number found (don't rely on page ordering).
     number, title, url = max(chapters, key=lambda c: c[0])
@@ -163,7 +184,7 @@ def main():
     # 3. Nothing new.
     if number <= last:
         print(f"No new chapter (latest: {format_number(number)})")
-        return 0
+        return "none"
 
     # 4. New chapter -> build notification text.
     chapter_label, subtitle = split_title(title, number)
@@ -182,10 +203,10 @@ def main():
             print(f"Sent ntfy notification to topic '{topic}'")
         except requests.RequestException as exc:
             print(f"ERROR: ntfy notification failed: {exc}", file=sys.stderr)
-            return 1
+            return "error"
     else:
         print("ERROR: NTFY_TOPIC is not set; cannot notify.", file=sys.stderr)
-        return 1
+        return "error"
 
     # 5b. Discord (optional). A failure here is non-fatal.
     if discord_url:
@@ -201,6 +222,60 @@ def main():
     print(f"New chapter detected: {ntfy_body}")
     print(f"URL: {url}")
     print(f"Updated last_chapter.txt: {format_number(last)} -> {format_number(number)}")
+    return "new"
+
+
+def release_window_end(now):
+    """If `now` (UTC) is inside the Wed-Fri window, return when it closes
+    (Saturday 00:00 UTC); otherwise return None."""
+    if now.weekday() not in RELEASE_WEEKDAYS:
+        return None
+    days_to_saturday = 5 - now.weekday()
+    return (now + timedelta(days=days_to_saturday)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+
+def set_output(**values):
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as fh:
+        for key, value in values.items():
+            fh.write(f"{key}={value}\n")
+
+
+def main():
+    now = datetime.now(timezone.utc)
+    window_end = release_window_end(now)
+    watch = window_end is not None and os.environ.get("WATCH", "1") != "0"
+
+    if not watch:
+        result = check_once()
+        set_output(found=str(result == "new").lower(), chain="false")
+        return 1 if result == "error" else 0
+
+    deadline = min(now + timedelta(minutes=MAX_RUN_MINUTES), window_end)
+    print(
+        f"Watch mode: checking every {POLL_SECONDS}s until "
+        f"{deadline:%a %H:%M} UTC (window closes {window_end:%a %H:%M} UTC)"
+    )
+    sys.stdout.flush()
+
+    while True:
+        result = check_once()
+        sys.stdout.flush()
+        if result == "new":
+            set_output(found="true", chain="false")
+            return 0
+        # Errors (site hiccup, ntfy down) are retried on the next poll.
+        if datetime.now(timezone.utc) + timedelta(seconds=POLL_SECONDS) >= deadline:
+            break
+        time.sleep(POLL_SECONDS)
+
+    # Hand off to a fresh run if the release window is still open.
+    still_open = datetime.now(timezone.utc) < window_end - timedelta(minutes=1)
+    set_output(found="false", chain=str(still_open).lower())
     return 0
 
 

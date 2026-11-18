@@ -7,10 +7,12 @@ no always-on machine. Notifications are delivered via [ntfy.sh](https://ntfy.sh)
 
 ## How it works
 
-A GitHub Actions job runs [`check_chapter.py`](check_chapter.py) on a schedule
-tuned to TCB's release pattern — **every 15 minutes on Wed/Thu/Fri** (when
-chapters normally drop, most often Thursday) and **every 3 hours** the rest of
-the week as a safety net for early/delayed releases. Each run:
+A GitHub Actions job runs [`check_chapter.py`](check_chapter.py). GitHub's own
+cron is too unreliable for this (a "every 15 min" schedule really fired every
+4–8 hours), so during the **Wed–Fri (UTC) release window** a run stays alive and
+checks the site **every 60 seconds** for ~5.5 hours, then starts the next run
+itself — continuous coverage until the chapter appears. The rest of the week it
+does an occasional single check. Each check:
 
 1. Fetches the TCB One Piece chapter list with a browser User-Agent.
 2. Parses every `/chapters/{id}/one-piece-chapter-{number}` link and picks the
@@ -93,16 +95,15 @@ NTFY_TOPIC=your-topic python check_chapter.py        # Linux/macOS
 
 ## Caveats
 
-- **GitHub cron is best-effort** — runs can be delayed 5–15 min during busy
-  periods. Still plenty fast for a weekly release.
+- **GitHub cron is best-effort** — it's only used to (re)start the watcher; the
+  watcher itself polls every minute, so notifications land within ~1–2 min.
 - **Cloudflare**: if TCB ever starts returning `403` to GitHub's IP ranges,
   swap `requests` for [`cloudscraper`](https://pypi.org/project/cloudscraper/) —
   it's a near drop-in replacement that solves Cloudflare's basic challenge. Add
   `cloudscraper` to `requirements.txt` and replace `requests.get(...)` in
   `fetch_chapters()` with a `cloudscraper.create_scraper()` session.
-- **Actions minutes / cost**: **public repos get unlimited free Actions** (this
-  repo is public — recommended). If you make it private instead, you get 2,000
-  free min/month; the tuned schedule above uses roughly ~1,400 min/month, which
-  still fits — but a 24/7 every-15-min schedule would *not* (~2,880 min/month).
+- **Actions minutes / cost**: the watcher uses up to ~72 runner-hours a week.
+  That's free because **this repo is public**. Don't make it private — that
+  would blow through the 2,000 free min/month.
   Either way, set your Actions **spending limit to $0**
   (github.com/settings/billing) to guarantee you're never charged.
