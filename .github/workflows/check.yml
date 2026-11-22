@@ -19,18 +19,34 @@ permissions:
   contents: write   # push last_chapter.txt
   actions: write    # start the next watch run
 
-# Only one run at a time. Don't cancel a running watcher: extra triggers just
-# wait in the queue (GitHub keeps only the newest pending one).
-concurrency:
-  group: chapter-check
-  cancel-in-progress: false
+# No `concurrency:` group on purpose: queued runs that GitHub cancels each
+# send a "run cancelled" notification. Instead, scheduled runs just exit
+# quietly (success) when a watcher is already running — see the first step.
 
 jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
+      - name: Skip if a watcher is already running
+        id: guard
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          busy=0
+          for st in in_progress queued; do
+            n=$(gh api "repos/${{ github.repository }}/actions/workflows/check.yml/runs?status=$st&per_page=20" \
+                  --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }})] | length')
+            busy=$((busy + n))
+          done
+          if [ "$busy" -gt 0 ]; then
+            echo "Another run is already active; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.guard.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           # Use the branch tip, not the SHA from when this run was queued, so a
@@ -38,14 +54,17 @@ jobs:
           ref: ${{ github.ref_name }}
 
       - name: Set up Python
+        if: steps.guard.outputs.skip != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install dependencies
+        if: steps.guard.outputs.skip != 'true'
         run: pip install -r requirements.txt
 
       - name: Check / watch for new chapter
+        if: steps.guard.outputs.skip != 'true'
         id: check
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
@@ -54,7 +73,7 @@ jobs:
         run: python -u check_chapter.py
 
       - name: Commit updated last_chapter.txt
-        if: steps.check.outputs.found == 'true'
+        if: steps.guard.outputs.skip != 'true' && steps.check.outputs.found == 'true'
         run: |
           git config user.name "chapter-bot"
           git config user.email "bot@users.noreply.github.com"
@@ -67,7 +86,7 @@ jobs:
           fi
 
       - name: Start next watch run
-        if: steps.check.outputs.chain == 'true'
+        if: steps.guard.outputs.skip != 'true' && steps.check.outputs.chain == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run check.yml --ref "${{ github.ref_name }}"
