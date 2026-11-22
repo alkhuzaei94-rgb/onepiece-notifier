@@ -21,7 +21,7 @@ does an occasional single check. Each check:
 4. If it's newer, sends an ntfy (and optional Discord) notification, then commits
    the new number back to the repo so it isn't announced twice.
 
-If the page can't be fetched or no chapters parse, the run fails **red** (exit 1)
+If the page can't be fetched or no chapters parse, the run logs it and exits quietly
 and `last_chapter.txt` is left untouched, so the next run simply retries.
 
 ## Setup

@@ -17,11 +17,9 @@ When running in GitHub Actions the script writes `found` and `chain` to
 $GITHUB_OUTPUT so the workflow knows whether to commit and whether to start
 the next watch run.
 
-Exit codes:
-  0  success (whether or not a new chapter was found)
-  1  (single-check mode only) the page fetch failed, no chapter links were
-     parsed, or ntfy could not be delivered. last_chapter.txt is left
-     untouched so the next run retries.
+Errors (page fetch failed, no chapter links parsed, ntfy down) are logged
+and the run still exits 0, so GitHub doesn't alert you; last_chapter.txt is
+left untouched so the next check retries.
 """
 import os
 import re
@@ -253,7 +251,9 @@ def main():
     if not watch:
         result = check_once()
         set_output(found=str(result == "new").lower(), chain="false")
-        return 1 if result == "error" else 0
+        # Don't fail the run on a hiccup: a red run makes GitHub send you an
+        # alert, and the next scheduled check retries anyway.
+        return 0
 
     deadline = min(now + timedelta(minutes=MAX_RUN_MINUTES), window_end)
     print(
